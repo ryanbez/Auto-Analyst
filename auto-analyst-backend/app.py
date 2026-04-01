@@ -89,6 +89,7 @@ from src.routes.session_routes import router as session_router, get_session_id_d
 from src.routes.deep_analysis_routes import router as deep_analysis_router
 
 from src.routes.templates_routes import router as templates_router
+from src.routes.autopilot_routes import router as autopilot_router
 
 from src.schemas.query_schema import QueryRequest
 
@@ -2878,6 +2879,8 @@ app.include_router(templates_router)
 
 app.include_router(blog_router)
 
+app.include_router(autopilot_router)
+
 
 
 if __name__ == "__main__":
@@ -2885,4 +2888,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
 
     uvicorn.run(app, host="0.0.0.0", port=port)
-
