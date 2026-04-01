@@ -8,74 +8,218 @@ Evaluate whether this repository can be adapted for a **marimo app** workflow wh
 4. run an autopilot flow when new data arrives,
 5. automatically label new data.
 
-## Current Capability Snapshot
+---
 
-### 1) Chat + multi-agent analysis: **Available now**
-- Backend provides chat endpoints for explicit agent routing (`/chat/{agent_name}`) and planner-style flow (`/chat`), with session-aware datasets and model selection.
-- Frontend already calls these endpoints and preserves chat context.
-- Agent architecture is modular and DSPy-based, so adding task-specific agents is feasible.
+## What already works well (from this repo)
 
-### 2) Plot generation and display: **Available now**
-- Backend code execution endpoint returns Plotly and Matplotlib outputs in structured blocks.
-- Frontend renders Plotly with `react-plotly.js` and supports code execution from chat.
-- This is compatible with marimo because marimo can also render Plotly/Matplotlib, but integration glue is required.
+### 1) Chat + multi-agent analysis ✅
+- Backend already exposes chat endpoints for explicit agent routing (`/chat/{agent_name}`) and planner routing (`/chat`) with session/dataset context.
+- The architecture is DSPy multi-agent, so adding new specialized agents is straightforward.
 
-### 3) Code execution loop: **Available now**
-- Existing `/code/execute` pipeline executes generated code and stores execution metadata.
-- Frontend currently triggers this automatically for detected code blocks.
+### 2) Plotting + analysis response ✅
+- Code execution returns both Plotly and Matplotlib payloads.
+- Frontend already renders Plotly with `react-plotly.js` and supports code execution loop from chat.
 
-### 4) New-data autopilot trigger: **Partially present (needs implementation)**
-- There are streaming/deep-analysis APIs, but no concrete ingestion trigger engine (e.g., webhook/file watcher/job runner) that monitors external data sources and launches analysis jobs automatically.
-- README mentions scheduled reports, but repository-level implementation for generalized ingestion/autopilot is not obvious as a standalone orchestration module.
+### 3) Good base for marimo integration ✅
+- marimo can render Plotly/Matplotlib natively, so API adapter + UI glue is the main work.
 
-### 5) Auto-labeling new data: **Not productized yet**
-- The system has ML/statistics agents and can generate classification code, but there is no explicit end-to-end “auto label incoming records” service flow (model registry + retraining + prediction + confidence threshold + human review queue).
+---
 
-## Feasibility Verdict
+## Missing pieces and practical fixes (implementable now)
 
-## ✅ Can it be used for your marimo use case?
-**Yes, with moderate integration work.**
+Below is a **buildable** checklist (not just theory).
 
-You already have a strong base for:
-- LLM-driven analytical chat,
-- plot/code generation,
-- multi-agent orchestration,
-- session-aware execution.
+### A. Missing: Event-driven ingestion/autopilot trigger
+**Current gap**
+- No clear generalized trigger engine for “new data arrived → run analysis/labeling automatically”.
 
-The missing pieces for your exact target are mainly in **MLOps/dataops orchestration** (autopilot trigger + reliable auto-label pipeline), not in core chat analytics.
+**Fix we can implement now**
+1. Add a new endpoint: `POST /autopilot/ingest-event`
+   - payload: `source_id`, `dataset_uri`, `schema_version`, `event_time`, `idempotency_key`
+2. Persist event to DB table `autopilot_runs` with status lifecycle:
+   - `queued -> running -> completed|failed|needs_review`
+3. Add worker process (RQ/Celery/Arq/Temporal) to consume events and execute pipeline.
+4. Add idempotency check on `idempotency_key` to avoid duplicate runs.
 
-## Recommended Implementation Plan (for marimo)
+**Definition of Done**
+- If same event arrives twice, second call returns existing run_id (no duplicate work).
 
-### Phase 1 — Embed core chat analytics in marimo (low-medium effort)
-- Use Auto-Analyst backend as an API service.
-- In marimo:
-  - add chat input,
-  - call `/chat` or `/chat/{agent}`,
-  - parse returned markdown/code blocks,
-  - optionally call `/code/execute`,
-  - render Plotly/Matplotlib directly in marimo cells.
+---
 
-### Phase 2 — Add autopilot trigger layer (medium effort)
-- Add a new “ingestion event” endpoint or queue consumer.
-- Trigger on:
-  - new file arrival (S3/GCS/local watcher), or
-  - webhook from ETL/ELT pipeline.
-- Persist each run as a job record (status, logs, artifacts, report URL).
+### B. Missing: Data contract + schema drift guardrails
+**Current gap**
+- No explicit contract validation before analysis/labeling.
 
-### Phase 3 — Implement production-grade auto labeling (medium-high effort)
-- Add dedicated labeling service:
-  - choose latest model for dataset domain,
-  - run predictions on new rows,
-  - confidence thresholding,
-  - send low-confidence rows to human review,
-  - write labels + provenance metadata.
-- Optional: active-learning loop (retrain when reviewed labels accumulate).
+**Fix we can implement now**
+1. Create `dataset_contracts` table:
+   - `source_id`, expected columns, dtypes, target column, null thresholds.
+2. Add validator step before running agents:
+   - hard fail for missing required columns,
+   - warning for extra columns or mild type drift.
+3. Write drift signals into `autopilot_run_metrics`.
 
-## Risks / Gaps to Address
-- Generated-code execution security boundaries (sandbox, resource limits, package allowlist).
-- Deterministic reproducibility for auto-label runs.
-- Drift detection + model versioning for long-term autopilot quality.
-- Clear SLAs for latency if marimo app is interactive.
+**Definition of Done**
+- Every run stores `validation_status` and drift summary JSON.
 
-## Bottom Line
-For your requirement (chat + plot + analysis + autopilot on new data + auto-labeling), this repository is a **good foundation** but not yet a complete turnkey solution. Build a thin marimo UI adapter first, then add an ingestion/autolabel orchestration layer for full autopilot behavior.
+---
+
+### C. Missing: Production auto-label pipeline
+**Current gap**
+- Repo can generate ML code, but no complete auto-label service flow.
+
+**Fix we can implement now**
+1. Add `labeling_jobs` table + `label_predictions` table.
+2. Implement label strategy (v1):
+   - load latest approved model by `source_id` from model registry,
+   - infer `predicted_label` + `confidence`,
+   - auto-accept when `confidence >= threshold`,
+   - route low-confidence rows to review queue.
+3. Add `human_review_queue` table and `POST /labels/review` endpoint.
+4. Add periodic retraining trigger (e.g., every N reviewed rows or weekly).
+
+**Definition of Done**
+- Pipeline produces traceable labels with `model_version`, `feature_hash`, and `decision_reason`.
+
+---
+
+### D. Missing: Reliability + reproducibility
+**Current gap**
+- Autopilot jobs need deterministic replay and observability.
+
+**Fix we can implement now**
+1. Store pipeline artifacts per run:
+   - prompt/version, model version, dataset fingerprint, code snapshot.
+2. Add run-level metrics:
+   - duration, row count, auto-accept rate, review rate, failure reason.
+3. Add retry policy with dead-letter queue.
+
+**Definition of Done**
+- Any run can be replayed with same inputs and version pins.
+
+---
+
+### E. Missing: marimo UX for operations
+**Current gap**
+- No operator panel for autopilot runs/review actions.
+
+**Fix we can implement now**
+In marimo app, create 4 tabs:
+1. **Chat/Explore**
+2. **Autopilot Runs** (status, logs, rerun)
+3. **Review Queue** (approve/correct labels)
+4. **Model Health** (confidence trend, drift trend)
+
+**Definition of Done**
+- Non-technical user can process low-confidence labels end-to-end without touching backend.
+
+---
+
+## Example Design A: LangChain + LangGraph (recommended for autopilot)
+
+### Why this fits
+- LangGraph gives explicit workflow state machine, retries, human-in-the-loop checkpoint, and durable execution — ideal for “new data arrives” automation.
+
+### High-level architecture
+1. **Ingestion Node**: fetch new batch from source URI.
+2. **Validation Node**: schema checks + basic data quality checks.
+3. **Profiling Node**: summary stats + drift report.
+4. **Labeling Node**:
+   - if approved model exists: predict + confidence.
+   - else: call LLM/deep-agent for weak labels.
+5. **Confidence Gate Node**:
+   - high confidence -> auto accept,
+   - low confidence -> human review queue.
+6. **Persistence Node**: save labels, metrics, artifacts.
+7. **Notification Node**: notify marimo UI / Slack.
+
+### Minimal LangGraph pseudo-code
+```python
+from typing import TypedDict, List, Dict, Any
+from langgraph.graph import StateGraph, END
+
+class AutoPilotState(TypedDict):
+    run_id: str
+    source_id: str
+    dataset_uri: str
+    rows: List[Dict[str, Any]]
+    valid: bool
+    drift_score: float
+    predictions: List[Dict[str, Any]]
+    review_items: List[Dict[str, Any]]
+
+
+def ingest(state: AutoPilotState) -> AutoPilotState: ...
+def validate(state: AutoPilotState) -> AutoPilotState: ...
+def profile_and_drift(state: AutoPilotState) -> AutoPilotState: ...
+def label_predict(state: AutoPilotState) -> AutoPilotState: ...
+def gate_confidence(state: AutoPilotState) -> AutoPilotState: ...
+def persist(state: AutoPilotState) -> AutoPilotState: ...
+def notify(state: AutoPilotState) -> AutoPilotState: ...
+
+graph = StateGraph(AutoPilotState)
+graph.add_node("ingest", ingest)
+graph.add_node("validate", validate)
+graph.add_node("profile", profile_and_drift)
+graph.add_node("label", label_predict)
+graph.add_node("gate", gate_confidence)
+graph.add_node("persist", persist)
+graph.add_node("notify", notify)
+
+graph.set_entry_point("ingest")
+graph.add_edge("ingest", "validate")
+graph.add_conditional_edges("validate", lambda s: "profile" if s["valid"] else END)
+graph.add_edge("profile", "label")
+graph.add_edge("label", "gate")
+graph.add_edge("gate", "persist")
+graph.add_edge("persist", "notify")
+graph.add_edge("notify", END)
+
+app = graph.compile()
+```
+
+### Human-in-the-loop behavior
+- `gate_confidence` sends uncertain rows to `review_queue`.
+- marimo Review tab lets user approve/correct.
+- corrected labels are written back and included in retraining dataset.
+
+---
+
+## Example Design B: Deep-Agent-first variant
+
+Use your existing DSPy/deep-agent stack for label suggestion:
+1. `preprocessing_agent` standardizes features.
+2. `sk_learn_agent` trains/loads baseline model.
+3. `deep_analysis_module` explains anomalies and suggests fallback weak labels.
+4. policy layer decides final action (`auto_accept` / `needs_review`).
+
+This keeps your current stack intact while adding orchestration around it.
+
+---
+
+## Quick implementation plan (2–4 weeks MVP)
+
+### Week 1
+- Add DB tables (`autopilot_runs`, `label_predictions`, `review_queue`, `dataset_contracts`).
+- Add `POST /autopilot/ingest-event` and worker skeleton.
+
+### Week 2
+- Implement validate + drift + labeling + confidence gate pipeline.
+- Expose `GET /autopilot/runs`, `GET /autopilot/runs/{id}`, `POST /labels/review`.
+
+### Week 3
+- Build marimo tabs (Runs/Review/Health).
+- Add retraining trigger + model registry metadata.
+
+### Week 4 (hardening)
+- retries, idempotency, dead-letter, dashboards, alerting.
+
+---
+
+## Final recommendation
+
+For your exact target (**autopilot on new data + auto label data**), choose:
+- **LangGraph orchestration** for workflow durability + HITL,
+- **existing Auto-Analyst agents** for analytics/code intelligence,
+- **marimo** as operator-facing UI.
+
+This is the fastest path that is both practical and extensible.
