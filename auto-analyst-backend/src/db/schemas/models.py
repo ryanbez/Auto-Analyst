@@ -235,3 +235,39 @@ class UserTemplatePreference(Base):
     )
     
     
+class AutopilotRun(Base):
+    """Tracks event-driven autopilot runs for new data ingestion."""
+    __tablename__ = 'autopilot_runs'
+
+    run_id = Column(Integer, primary_key=True, autoincrement=True)
+    source_id = Column(String(120), nullable=False, index=True)
+    dataset_uri = Column(Text, nullable=False)
+    schema_version = Column(String(50), nullable=True)
+    event_time = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
+    idempotency_key = Column(String(200), nullable=False, unique=True, index=True)
+    status = Column(String(30), nullable=False, default='queued')
+    run_metrics = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class LabelPrediction(Base):
+    """Stores auto-label predictions with review and provenance fields."""
+    __tablename__ = 'label_predictions'
+
+    prediction_id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('autopilot_runs.run_id', ondelete='CASCADE'), nullable=False)
+    row_index = Column(Integer, nullable=False)
+    predicted_label = Column(String(200), nullable=False)
+    confidence = Column(Float, nullable=False, default=0.5)
+    model_version = Column(String(100), nullable=True)
+    decision_reason = Column(Text, nullable=True)
+
+    review_status = Column(String(30), nullable=False, default='pending')  # pending|approved|corrected
+    reviewed_label = Column(String(200), nullable=True)
+    reviewer_note = Column(Text, nullable=True)
+
+    row_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
